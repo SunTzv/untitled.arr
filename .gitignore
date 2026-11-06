@@ -1,0 +1,20 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary and runtime files
+.current_recording*
+*.ffmpeg.log
+*.tmp
+*.pid
+
+# Local configuration overrides
+config.json
+
+# Editor and OS metadata
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
