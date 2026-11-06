@@ -10,8 +10,8 @@ import re
 import time
 from pathlib import Path
 from typing import Dict, Optional
-from Spotifies.config import CONFIG, RecorderConfig
-from Spotifies.player_mpris import TrackMetadata
+from config import CONFIG, RecorderConfig
+from player_mpris import TrackMetadata
 
 
 # ==============================================================================

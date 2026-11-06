@@ -7,12 +7,12 @@ from __future__ import annotations
 import time
 from enum import Enum
 from typing import Callable, Optional
-from Spotifies.config import CONFIG, RecorderConfig
-from Spotifies.library_index import LibraryManager
-from Spotifies.player_mpris import TrackMetadata
-from Spotifies.recorder import AudioRecorder
-from Spotifies.tagger import MetadataTagger
-from Spotifies.verifier import AudioVerifier
+from config import CONFIG, RecorderConfig
+from library_index import LibraryManager
+from player_mpris import TrackMetadata
+from recorder import AudioRecorder
+from tagger import MetadataTagger
+from verifier import AudioVerifier
 
 
 # ==============================================================================

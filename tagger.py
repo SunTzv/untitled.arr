@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from mutagen.flac import Picture
 from mutagen.oggopus import OggOpus
-from Spotifies.player_mpris import TrackMetadata
+from player_mpris import TrackMetadata
 
 
 # ==============================================================================

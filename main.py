@@ -13,16 +13,18 @@ import time
 from pathlib import Path
 
 # Add project root to sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from Spotifies.audio_sink import AudioSinkManager
-from Spotifies.config import CONFIG, RecorderConfig
-from Spotifies.library_index import LibraryManager
-from Spotifies.player_mpris import SpotifyMPRIS
-from Spotifies.recorder import AudioRecorder
-from Spotifies.state_machine import RecordingSession
-from Spotifies.tagger import MetadataTagger
-from Spotifies.verifier import AudioVerifier
+from audio_sink import AudioSinkManager
+from config import CONFIG, RecorderConfig
+from library_index import LibraryManager
+from player_mpris import SpotifyMPRIS
+from recorder import AudioRecorder
+from state_machine import RecordingSession
+from tagger import MetadataTagger
+from verifier import AudioVerifier
 
 
 # ==============================================================================

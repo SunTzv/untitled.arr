@@ -7,7 +7,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Tuple
-from Spotifies.config import CONFIG, RecorderConfig
+from config import CONFIG, RecorderConfig
 
 
 # ==============================================================================
