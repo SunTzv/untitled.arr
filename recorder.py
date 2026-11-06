@@ -71,7 +71,7 @@ class AudioRecorder:
             )
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to start FFmpeg: {e}")
+            print(f"Error: Failed to start FFmpeg: {e}")
             self.proc = None
             return False
 

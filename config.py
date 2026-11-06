@@ -73,10 +73,37 @@ def load_config(config_path: Path | None = None) -> RecorderConfig:
                     if hasattr(cfg, key):
                         setattr(cfg, key, val)
         except Exception as e:
-            print(f"[WARN] Failed to load config from {config_path}: {e}")
+            print(f"Warning: Failed to load configuration from {config_path}: {e}")
 
     cfg.ensure_directories()
     return cfg
+
+
+# ==============================================================================
+# HUMAN TIME FORMATTING HELPERS
+# ==============================================================================
+
+def format_duration(seconds: float) -> str:
+    """Formats seconds into human-readable duration like 3:45 or 1:04:20."""
+    total_sec = max(0, int(round(seconds)))
+    hrs = total_sec // 3600
+    mins = (total_sec % 3600) // 60
+    secs = total_sec % 60
+    if hrs > 0:
+        return f"{hrs}:{mins:02d}:{secs:02d}"
+    return f"{mins}:{secs:02d}"
+
+
+def format_human_time(seconds: float) -> str:
+    """Formats seconds into conversational phrasing like '33 mins' or '2 hrs 15 mins'."""
+    total_sec = max(0, int(round(seconds)))
+    hrs = total_sec // 3600
+    mins = (total_sec % 3600) // 60
+    if hrs > 0 and mins > 0:
+        return f"{hrs} hr{'s' if hrs != 1 else ''} {mins} min{'s' if mins != 1 else ''}"
+    if hrs > 0:
+        return f"{hrs} hr{'s' if hrs != 1 else ''}"
+    return f"{mins} min{'s' if mins != 1 else ''}"
 
 
 # ==============================================================================

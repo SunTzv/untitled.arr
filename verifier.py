@@ -7,7 +7,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Tuple
-from config import CONFIG, RecorderConfig
+from config import CONFIG, RecorderConfig, format_duration
 
 
 # ==============================================================================
@@ -63,11 +63,11 @@ class AudioVerifier:
 
         min_required = expected_duration * self.config.completion_ratio
         if recorded_len < min_required:
-            pct = (recorded_len / expected_duration * 100) if expected_duration > 0 else 0
+            pct = int(round((recorded_len / expected_duration * 100))) if expected_duration > 0 else 0
             return (
                 False,
                 recorded_len,
-                f"Incomplete take ({recorded_len:.1f}s / {expected_duration:.1f}s, {pct:.1f}% listened)"
+                f"only listened to {format_duration(recorded_len)} of {format_duration(expected_duration)} ({pct}%, needed {int(self.config.completion_ratio * 100)}%)"
             )
 
-        return True, recorded_len, f"Complete ({recorded_len:.1f}s / {expected_duration:.1f}s)"
+        return True, recorded_len, f"Complete ({format_duration(recorded_len)} / {format_duration(expected_duration)})"

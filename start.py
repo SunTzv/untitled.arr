@@ -23,28 +23,16 @@ from main import DaemonSupervisor
 # ==============================================================================
 
 def main():
-    print("=" * 60)
-    print("          UNTITLED.ARR - AUTO STARTUP")
-    print("=" * 60)
-
     # 1. Setup isolated audio sink
     sink_mgr = AudioSinkManager(CONFIG.sink_name)
     if not sink_mgr.is_sink_active():
-        print("[*] Setting up isolated audio sink...")
         _, msg = sink_mgr.setup_isolated_sink()
-        print(f"[*] {msg}")
-    else:
-        print(f"[*] Dedicated sink '{CONFIG.sink_name}' is already active.")
+        print(f"✓ {msg}")
 
     # 2. Redirect active Spotify audio stream
-    print("[*] Checking Spotify stream routing...")
-    _, r_msg = sink_mgr.route_spotify_to_sink()
-    print(f"[*] {r_msg}")
+    sink_mgr.route_spotify_to_sink()
 
     # 3. Launch recording daemon
-    print(f"[*] Destination directory: {CONFIG.output_dir}/")
-    print("[*] Starting recorder... (Press Ctrl+C to stop)\n")
-
     daemon = DaemonSupervisor()
     daemon.run()
 

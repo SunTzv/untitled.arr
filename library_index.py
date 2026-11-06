@@ -73,7 +73,7 @@ class LibraryManager:
             with open(self.index_file, "r", encoding="utf-8") as f:
                 self.index = json.load(f)
         except Exception as e:
-            print(f"[WARN] Error loading library index: {e}")
+            print(f"Warning: Could not read library index: {e}")
             self.index = {}
 
     def save_index(self) -> bool:
@@ -85,7 +85,7 @@ class LibraryManager:
             tmp_file.replace(self.index_file)
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to save library index: {e}")
+            print(f"Error: Could not save library index: {e}")
             if tmp_file.exists():
                 tmp_file.unlink(missing_ok=True)
             return False
@@ -137,5 +137,5 @@ class LibraryManager:
             self.save_index()
             return dest_path
         except Exception as e:
-            print(f"[ERROR] Failed to commit recording to {dest_path}: {e}")
+            print(f"Error: Could not save recording to {dest_path}: {e}")
             return None

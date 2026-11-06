@@ -41,7 +41,7 @@ class AudioSinkManager:
     def setup_isolated_sink(self) -> Tuple[bool, str]:
         """Creates the virtual null-sink and loopback to maintain audible playback."""
         if self.is_sink_active():
-            return True, f"Sink '{self.sink_name}' is already active."
+            return True, f"Dedicated audio sink '{self.sink_name}' is already active."
 
         try:
             # Create isolated null-sink
@@ -64,9 +64,9 @@ class AudioSinkManager:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            return True, f"Successfully created '{self.sink_name}' and loopback."
+            return True, f"Created isolated audio sink '{self.sink_name}'."
         except subprocess.CalledProcessError as e:
-            return False, f"Failed to set up isolated sink: {e}"
+            return False, f"Failed to set up isolated audio sink: {e}"
 
     def teardown_isolated_sink(self) -> Tuple[bool, str]:
         """Unloads modules associated with the dedicated sink."""
@@ -83,9 +83,11 @@ class AudioSinkManager:
                     mod_id = parts[0]
                     subprocess.call(["pactl", "unload-module", mod_id], stderr=subprocess.DEVNULL)
                     unloaded += 1
-            return True, f"Unloaded {unloaded} audio module(s)."
+            if unloaded > 0:
+                return True, f"Removed isolated sink '{self.sink_name}' and restored normal routing."
+            return True, "No isolated audio sink found to remove."
         except Exception as e:
-            return False, f"Error tearing down sink: {e}"
+            return False, f"Failed to tear down audio sink: {e}"
 
     # ==========================================================================
     # SOURCE DETECTION & QUERY
@@ -122,7 +124,7 @@ class AudioSinkManager:
     def route_spotify_to_sink(self) -> Tuple[bool, str]:
         """Redirects active Spotify playback streams to the dedicated sink."""
         if not self.is_sink_active():
-            return False, f"Sink '{self.sink_name}' does not exist."
+            return False, f"Isolated sink '{self.sink_name}' is not active."
 
         try:
             output = subprocess.check_output(
@@ -158,7 +160,7 @@ class AudioSinkManager:
                     is_spotify = False
 
             if moved_count > 0:
-                return True, f"Routed {moved_count} Spotify audio stream(s) to '{self.sink_name}'."
-            return False, "No active Spotify stream found to route."
+                return True, f"Routed Spotify playback stream to '{self.sink_name}'."
+            return False, "No active Spotify playback found to route (play a track first)."
         except Exception as e:
-            return False, f"Error routing Spotify: {e}"
+            return False, f"Could not route Spotify audio: {e}"

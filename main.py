@@ -18,7 +18,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from audio_sink import AudioSinkManager
-from config import CONFIG, RecorderConfig
+from config import CONFIG, RecorderConfig, format_duration, format_human_time
 from library_index import LibraryManager
 from player_mpris import SpotifyMPRIS
 from recorder import AudioRecorder
@@ -61,7 +61,7 @@ class DaemonSupervisor:
                 with open(self.PID_FILE, "r") as f:
                     old_pid = int(f.read().strip())
                 os.kill(old_pid, 0)
-                print(f"[ERROR] Another daemon is already running (PID: {old_pid}).")
+                print(f"Error: Another untitled.arr instance is already running (PID {old_pid}).")
                 return False
             except (OSError, ValueError):
                 pass  # Stale lock file
@@ -71,7 +71,7 @@ class DaemonSupervisor:
                 f.write(str(os.getpid()))
             return True
         except Exception as e:
-            print(f"[WARN] Failed to write PID lock file: {e}")
+            print(f"Warning: Could not write PID lock file: {e}")
             return True
 
     def release_lock(self) -> None:
@@ -91,13 +91,13 @@ class DaemonSupervisor:
         source, is_isolated = self.sink_manager.get_recording_source(self.config.prefer_isolated_sink)
 
         if is_isolated:
-            print(f"[*] Audio Isolation: ACTIVE using dedicated sink '{self.config.sink_name}'")
+            print(f"Audio Isolation : Active ({self.config.sink_name})")
             success, msg = self.sink_manager.route_spotify_to_sink()
             if success:
-                print(f"[*] {msg}")
+                print(f"Audio Routing   : {msg}")
         else:
-            print(f"[!] Audio Isolation: INACTIVE (capturing default monitor '{source}').")
-            print("    Run 'python3 start.py' to isolate Spotify from system and browser alerts.")
+            print(f"Audio Isolation : Inactive (capturing system default '{source}')")
+            print("                  Tip: Run 'python3 start.py' to isolate Spotify from desktop alerts.")
 
         self.session.set_audio_source(source)
         return source
@@ -114,25 +114,28 @@ class DaemonSupervisor:
         self.running = True
 
         def handle_shutdown(signum, frame):
-            print("\n[*] Stopping daemon gracefully...")
+            print("\nStopping recorder daemon... Done.")
             self.running = False
-            self.session.finalize_current_take("Daemon terminated")
+            self.session.finalize_current_take("Daemon stopped")
             self.release_lock()
             sys.exit(0)
 
         signal.signal(signal.SIGINT, handle_shutdown)
         signal.signal(signal.SIGTERM, handle_shutdown)
 
-        print("=" * 60)
-        print("          UNTITLED.ARR - AUTO-RECORDER DAEMON")
-        print("=" * 60)
-        print(f"[*] Output Directory: {self.config.output_dir}")
-        print(f"[*] Audio Codec     : Opus @ {self.config.audio_bitrate} VBR (48 kHz)")
-        print(f"[*] Min Listen Req  : {int(self.config.completion_ratio * 100)}% of song duration")
-        print(f"[*] Saved Tracks    : {len(self.library.index)} in library")
+        saved_count = len(self.library.index)
+        song_word = "song" if saved_count == 1 else "songs"
+
+        print("untitled.arr — Spotify Auto-Recorder")
+        print("─────────────────────────────────────────────")
+        print(f"Output Folder   : {self.config.output_dir}")
+        print(f"Saved Music     : {saved_count} {song_word} in library")
+        print(f"Audio Format    : Opus {self.config.audio_bitrate} (48 kHz)")
+        print(f"Listen Required : {int(self.config.completion_ratio * 100)}% of track duration")
 
         self.setup_audio_source()
-        print("\n[*] Waiting for Spotify playback...\n")
+        print("─────────────────────────────────────────────")
+        print("Listening for Spotify playback... (Ctrl+C to stop)\n")
 
         try:
             while self.running:
@@ -154,43 +157,58 @@ def cmd_status() -> None:
     lib = LibraryManager(config)
     meta = SpotifyMPRIS.get_track_data()
 
-    print("=== untitled.arr Status ===")
-    print(f"Destination: {config.output_dir}")
-    print(f"Saved Songs: {len(lib.index)}")
-    print(f"Isolated Sink ({config.sink_name}): {'Active' if sink_mgr.is_sink_active() else 'Not running'}")
+    is_sink_active = sink_mgr.is_sink_active()
+    sink_status = f"Active ({config.sink_name})" if is_sink_active else "Inactive (system default)"
+
+    saved_count = len(lib.index)
+    song_word = "song" if saved_count == 1 else "songs"
+
+    print("untitled.arr Status")
+    print("─────────────────────────────────────────────")
+    print(f"Destination    : {config.output_dir}")
+    print(f"Library        : {saved_count} {song_word} saved")
+    print(f"Audio Sink     : {sink_status}")
+    print()
 
     if meta:
-        print(f"Spotify Player : {meta.status}")
-        print(f"Current Track  : {meta.title} ({meta.artist})")
-        print(f"Album          : {meta.album}")
-        print(f"Position       : {int(meta.position)}s / {int(meta.duration)}s")
-        print(f"In Library     : {'Yes' if lib.is_recorded(meta.canonical_id) else 'No'}")
+        status_icon = "▶" if meta.status == "Playing" else ("⏸" if meta.status == "Paused" else "⏹")
+        pct = int(round((meta.position / meta.duration * 100))) if meta.duration > 0 else 0
+        in_lib = "Yes (already recorded)" if lib.is_recorded(meta.canonical_id) else "No (will record on full listen)"
+        print(f"Spotify Player : {status_icon} {meta.status}")
+        print(f"Now Playing    : {meta.title} · {meta.artist}")
+        if meta.album and meta.album != "Unknown Album":
+            print(f"Album          : {meta.album}")
+        print(f"Progress       : {format_duration(meta.position)} / {format_duration(meta.duration)} ({pct}%)")
+        print(f"Saved in Music : {in_lib}")
     else:
-        print("Spotify Player : Not detected")
+        print("Spotify Player : Not detected or Spotify is closed")
 
 
 def cmd_setup_sink() -> None:
     """Creates the isolated null-sink in PipeWire and routes Spotify audio."""
     sink_mgr = AudioSinkManager(CONFIG.sink_name)
     ok, msg = sink_mgr.setup_isolated_sink()
-    print(msg)
+    prefix = "✓" if ok else "Error:"
+    print(f"{prefix} {msg}")
     if ok:
         _, r_msg = sink_mgr.route_spotify_to_sink()
-        print(f"[*] {r_msg}")
+        print(f"  {r_msg}")
 
 
 def cmd_teardown_sink() -> None:
     """Removes the isolated null-sink and loopback modules."""
     sink_mgr = AudioSinkManager(CONFIG.sink_name)
-    _, msg = sink_mgr.teardown_isolated_sink()
-    print(msg)
+    ok, msg = sink_mgr.teardown_isolated_sink()
+    prefix = "✓" if ok else "Error:"
+    print(f"{prefix} {msg}")
 
 
 def cmd_route() -> None:
     """Routes active Spotify stream to the isolated sink."""
     sink_mgr = AudioSinkManager(CONFIG.sink_name)
-    _, msg = sink_mgr.route_spotify_to_sink()
-    print(msg)
+    ok, msg = sink_mgr.route_spotify_to_sink()
+    prefix = "✓" if ok else "Info:"
+    print(f"{prefix} {msg}")
 
 
 def cmd_verify_library() -> None:
@@ -215,10 +233,11 @@ def cmd_verify_library() -> None:
             total_duration += verifier.get_file_duration(file_path)
 
     mb = total_bytes / (1024 * 1024)
-    hours = total_duration / 3600
-    print(f"Verified {total_files} audio files ({mb:.1f} MB, {hours:.2f} hours of music).")
+    human_time = format_human_time(total_duration)
+    song_word = "song" if total_files == 1 else "songs"
+    print(f"✓ Verified {total_files} {song_word} ({mb:.1f} MB, {human_time} of music).")
     if missing:
-        print(f"[!] {len(missing)} indexed file(s) missing on disk.")
+        print(f"⚠ Warning: {len(missing)} indexed song(s) missing from disk.")
 
 
 # ==============================================================================

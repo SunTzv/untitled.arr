@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from enum import Enum
 from typing import Callable, Optional
-from config import CONFIG, RecorderConfig
+from config import CONFIG, RecorderConfig, format_duration
 from library_index import LibraryManager
 from player_mpris import TrackMetadata
 from recorder import AudioRecorder
@@ -66,10 +66,10 @@ class RecordingSession:
 
     def start_take(self, meta: TrackMetadata) -> None:
         """Initiates recording of a new track starting near position 0."""
-        self.log(f"[RECORDING] {meta.title} ({meta.artist}) [~{int(meta.duration)}s]")
+        self.log(f"● Recording: {meta.title} · {meta.artist} [{format_duration(meta.duration)}]")
         started = self.recorder.start_recording(self.audio_source)
         if not started:
-            self.log("[ERROR] Failed to start audio capture process.")
+            self.log(f"Error: Failed to start audio recording for '{meta.title}'.")
             self.state = EngineState.IDLE
             self.active_meta = None
             return
@@ -96,18 +96,19 @@ class RecordingSession:
         self.state = EngineState.IDLE
 
         ret_code, err_msg = self.recorder.stop_recording()
-        if ret_code != 0 and err_msg:
-            self.log(f"[WARN] FFmpeg exited with code {ret_code}: {err_msg.strip()}")
 
         if self.is_invalid:
-            self.log(f"[DISCARDED] {meta.title} ({meta.artist}) - Scrubbed or seeked [{reason}]")
+            self.log(f"✕ Discarded: {meta.title} · {meta.artist} (seek/scrub detected)")
             self.recorder.discard_take()
             return False
 
         # Verify integrity and duration threshold
         is_valid, recorded_len, v_reason = self.verifier.verify_recording(temp_file, meta.duration)
         if not is_valid:
-            self.log(f"[DISCARDED] {meta.title} ({meta.artist}) - {v_reason} [{reason}]")
+            if recorded_len >= 5.0:
+                self.log(f"✕ Discarded: {meta.title} · {meta.artist} ({v_reason})")
+            else:
+                self.log(f"Skipped: {meta.title} · {meta.artist}")
             self.recorder.discard_take()
             return False
 
@@ -117,10 +118,10 @@ class RecordingSession:
         # Commit to library
         dest_path = self.library.commit_recording(temp_file, meta, recorded_len)
         if dest_path:
-            self.log(f"[SAVED] {dest_path.name} ({int(recorded_len)}s / {int(meta.duration)}s)")
+            self.log(f"✓ Saved: {meta.title} · {meta.artist} [{format_duration(recorded_len)} / {format_duration(meta.duration)}] -> {dest_path.name}")
             return True
         else:
-            self.log(f"[ERROR] Failed to commit {meta.title} to library.")
+            self.log(f"Error: Failed to commit '{meta.title}' to library.")
             self.recorder.discard_take()
             return False
 
@@ -148,7 +149,7 @@ class RecordingSession:
         is_same_track = self.active_meta and (meta.canonical_id == self.active_meta.canonical_id)
         if is_same_track and self.state == EngineState.RECORDING:
             if self.last_pos > 15.0 and meta.position <= self.config.max_start_offset:
-                self.log("[REPEAT-ONE] Track looped back to beginning.")
+                self.log(f"Track repeated — saving previous take of '{meta.title}'.")
                 self.finalize_current_take("Repeat loop")
 
         # Track transition
@@ -176,7 +177,7 @@ class RecordingSession:
             if self.state == EngineState.RECORDING:
                 self.state = EngineState.PAUSED
                 self.pause_start_time = now
-                self.log(f"[PAUSED] {meta.title} ({meta.artist}) at {int(meta.position)}s")
+                self.log(f"⏸ Paused: {meta.title} · {meta.artist} [{format_duration(meta.position)}]")
 
             elif self.state == EngineState.PAUSED:
                 pause_duration = now - self.pause_start_time
@@ -192,13 +193,13 @@ class RecordingSession:
             self.state = EngineState.RECORDING
             self.last_wall_time = now
             self.last_pos = meta.position
-            self.log(f"[RESUMED] Playback continued at {int(meta.position)}s")
+            self.log(f"▶ Resumed: {meta.title} · {meta.artist} [{format_duration(meta.position)}]")
             return
 
         # Active recording health & seek detection
         if self.state == EngineState.RECORDING:
             if not self.recorder.is_recording():
-                self.log("[ERROR] Audio recorder subprocess exited unexpectedly.")
+                self.log(f"Error: Audio recording process stopped unexpectedly for '{meta.title}'.")
                 self.finalize_current_take("Recorder crashed")
                 return
 
@@ -208,7 +209,7 @@ class RecordingSession:
             # Invalidate take on forward skips or backward scrubs
             if abs(pos_delta - wall_delta) > self.config.max_seek_discrepancy:
                 if not self.is_invalid:
-                    self.log(f"[INVALIDATED] Seek detected (pos delta: {pos_delta:.2f}s, wall: {wall_delta:.2f}s)")
+                    self.log(f"Seek detected in '{meta.title}' — take invalidated.")
                     self.is_invalid = True
 
             self.last_pos = meta.position

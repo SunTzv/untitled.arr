@@ -40,7 +40,7 @@ class MetadataTagger:
                 if len(data) > 100:
                     return data, content_type
         except Exception as e:
-            print(f"[WARN] Failed to download cover art from {art_url}: {e}")
+            print(f"Warning: Could not download album art: {e}")
         return None
 
     # ==========================================================================
@@ -83,5 +83,5 @@ class MetadataTagger:
             audio.save()
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to tag audio file {file_path}: {e}")
+            print(f"Error: Could not embed metadata tags into {file_path.name}: {e}")
             return False
