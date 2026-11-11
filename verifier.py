@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Tuple
-from config import CONFIG, RecorderConfig, format_duration
+from config import CONFIG, RecorderConfig, format_duration, get_ffmpeg_path, get_ffprobe_path
 
 
 # ==============================================================================
@@ -30,7 +30,7 @@ class AudioVerifier:
             return 0.0
 
         cmd = [
-            "ffprobe",
+            get_ffprobe_path(),
             "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
@@ -56,7 +56,7 @@ class AudioVerifier:
         max_ratio = getattr(self.config, "max_silence_ratio", 0.10)
 
         cmd = [
-            "ffmpeg",
+            get_ffmpeg_path(),
             "-v", "info",
             "-nostdin",
             "-i", str(file_path),

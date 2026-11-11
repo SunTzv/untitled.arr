@@ -57,8 +57,9 @@ class RecorderConfig:
     silence_min_seconds: float = 2.0      # Minimum duration of silence to detect (seconds)
     max_silence_ratio: float = 0.10       # Maximum acceptable ratio of silence to take duration
 
-    # Audio isolation
+    # Audio isolation & devices
     sink_name: str = "SpotifySink"
+    windows_audio_device: str = ""        # Optional: DirectShow audio device name on Windows (e.g. "CABLE Output")
     prefer_isolated_sink: bool = True
     reroute_interval: float = 3.0         # Seconds between periodic stream re-routing checks
 
@@ -126,6 +127,65 @@ def format_human_time(seconds: float) -> str:
     if hrs > 0:
         return f"{hrs} hr{'s' if hrs != 1 else ''}"
     return f"{mins} min{'s' if mins != 1 else ''}"
+
+
+# ==============================================================================
+# BINARY LOCATOR (PORTABLE / BUNDLED SUPPORT)
+# ==============================================================================
+
+def find_binary(name: str) -> str:
+    """
+    Resolves the executable path for ffmpeg/ffprobe.
+    Checks PyInstaller bundle, executable directory, script directory, bin/ subfolder, and PATH.
+    """
+    import shutil
+    import sys
+
+    ext = ".exe" if sys.platform == "win32" else ""
+    target_name = f"{name}{ext}"
+
+    # 1. PyInstaller bundled temp directory
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cand = Path(meipass) / target_name
+        if cand.is_file():
+            return str(cand)
+
+    # 2. Directory of current Python executable or frozen binary
+    try:
+        exe_dir = Path(sys.executable).parent
+        cand = exe_dir / target_name
+        if cand.is_file():
+            return str(cand)
+    except Exception:
+        pass
+
+    # 3. Directory of this project repository
+    script_dir = Path(__file__).resolve().parent
+    cand = script_dir / target_name
+    if cand.is_file():
+        return str(cand)
+
+    # 4. bin/ or tools/ subfolder inside project
+    for sub in ("bin", "tools"):
+        cand = script_dir / sub / target_name
+        if cand.is_file():
+            return str(cand)
+
+    # 5. Look in system PATH
+    found = shutil.which(name)
+    if found:
+        return found
+
+    return name
+
+
+def get_ffmpeg_path() -> str:
+    return find_binary("ffmpeg")
+
+
+def get_ffprobe_path() -> str:
+    return find_binary("ffprobe")
 
 
 # ==============================================================================
