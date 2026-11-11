@@ -59,8 +59,8 @@ class SpotifyMPRIS:
     )
 
     @classmethod
-    def get_track_data(cls, player_name: str = "spotify") -> Optional[TrackMetadata]:
-        """Queries the active player for current track metadata."""
+    def get_linux_track_data(cls, player_name: str = "spotify") -> Optional[TrackMetadata]:
+        """Queries Linux MPRIS player via playerctl."""
         cmd = ["playerctl", "-p", player_name, "metadata", "--format", cls.FORMAT]
         try:
             raw = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
@@ -129,3 +129,12 @@ class SpotifyMPRIS:
             return None
         except Exception:
             return None
+
+    @classmethod
+    def get_track_data(cls, player_name: str = "spotify") -> Optional[TrackMetadata]:
+        """Universal entrypoint: returns active track data across Linux, Windows, and macOS."""
+        import sys
+        if sys.platform != "linux":
+            from player import SpotifyPlayer
+            return SpotifyPlayer.get_track_data(player_name)
+        return cls.get_linux_track_data(player_name)
