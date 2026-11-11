@@ -26,8 +26,13 @@ def main():
     # 1. Setup isolated audio sink
     sink_mgr = AudioSinkManager(CONFIG.sink_name)
     if not sink_mgr.is_sink_active():
-        _, msg = sink_mgr.setup_isolated_sink()
-        print(f"✓ {msg}")
+        ok, msg = sink_mgr.setup_isolated_sink()
+        if ok:
+            print(f"✓ {msg}")
+        elif sys.platform == "linux":
+            print(f"⚠ {msg}")
+        else:
+            print(f"ℹ {msg}")
 
     # 2. Redirect active Spotify audio stream
     sink_mgr.route_spotify_to_sink()

@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -35,7 +36,7 @@ from verifier import AudioVerifier
 # ==============================================================================
 
 class DaemonSupervisor:
-    PID_FILE = Path("/tmp/untitled_arr.pid")
+    PID_FILE = Path(tempfile.gettempdir()) / "untitled_arr.pid"
 
     def __init__(self, config: RecorderConfig = CONFIG):
         self.config = config
@@ -60,15 +61,27 @@ class DaemonSupervisor:
     # PID LOCKING
     # ==========================================================================
 
+    @staticmethod
+    def _is_pid_running(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        if pid == os.getpid():
+            return True
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            return False
+
     def acquire_lock(self) -> bool:
         """Guarantees only one daemon instance runs at a time."""
         if self.PID_FILE.exists():
             try:
                 with open(self.PID_FILE, "r") as f:
                     old_pid = int(f.read().strip())
-                os.kill(old_pid, 0)
-                print(f"Error: Another untitled.arr instance is already running (PID {old_pid}).")
-                return False
+                if self._is_pid_running(old_pid):
+                    print(f"Error: Another untitled.arr instance is already running (PID {old_pid}).")
+                    return False
             except (OSError, ValueError):
                 pass  # Stale lock file
 
@@ -97,16 +110,18 @@ class DaemonSupervisor:
         source, is_isolated = self.sink_manager.get_recording_source(self.config.prefer_isolated_sink)
         self.is_isolated = is_isolated
 
+        py_cmd = "python" if sys.platform == "win32" else "python3"
+        sink_label = getattr(self.config, "windows_audio_device", "") or self.config.sink_name
         if is_isolated:
-            print(f"Audio Isolation : Active ({self.config.sink_name})")
+            print(f"Audio Isolation : Active ({sink_label})")
             all_on_sink, moved, msg = self.sink_manager.route_spotify()
             if all_on_sink:
                 print(f"Audio Routing   : {msg}")
             else:
                 print(f"Audio Routing   : {msg} (will keep retrying)")
         else:
-            print(f"Audio Isolation : Inactive (capturing system default '{source}')")
-            print("                  Tip: Run 'python3 start.py' to isolate Spotify from desktop alerts.")
+            print(f"Audio Isolation : Inactive (capturing '{source}')")
+            print(f"                  Tip: Run '{py_cmd} start.py' to configure audio routing.")
 
         self.session.set_audio_source(source)
         return source
@@ -154,7 +169,10 @@ class DaemonSupervisor:
             sys.exit(0)
 
         signal.signal(signal.SIGINT, handle_shutdown)
-        signal.signal(signal.SIGTERM, handle_shutdown)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, handle_shutdown)
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, handle_shutdown)
 
         saved_count = len(self.library.index)
         song_word = "song" if saved_count == 1 else "songs"
@@ -226,10 +244,10 @@ def cmd_status() -> None:
 
 
 def cmd_setup_sink() -> None:
-    """Creates the isolated null-sink in PipeWire and routes Spotify audio."""
+    """Creates the isolated null-sink in PipeWire/Pulse or verifies virtual cable on Windows."""
     sink_mgr = AudioSinkManager(CONFIG.sink_name)
     ok, msg = sink_mgr.setup_isolated_sink()
-    prefix = "✓" if ok else "Error:"
+    prefix = "✓" if ok else ("Info:" if sys.platform != "linux" else "Error:")
     print(f"{prefix} {msg}")
     if ok:
         _, r_msg = sink_mgr.route_spotify_to_sink()
