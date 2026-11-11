@@ -164,6 +164,41 @@ class ArtistResolver:
     def _from_page(self, tid: str) -> List[str]:
         return parse_og_description(_http_get(f"https://open.spotify.com/track/{tid}"))
 
+    def search_track(self, title: str, artist: str) -> Optional[dict]:
+        """Searches Spotify Web API for track metadata if API creds are configured."""
+        token = self._api_token()
+        if not token:
+            return None
+        try:
+            q = urllib.parse.quote(f"track:{title} artist:{artist}")
+            raw = _http_get(
+                f"https://api.spotify.com/v1/search?q={q}&type=track&limit=1",
+                {"Authorization": f"Bearer {token}"}
+            )
+            items = json.loads(raw).get("tracks", {}).get("items", [])
+            if not items:
+                return None
+            item = items[0]
+            tid = f"spotify:track:{item.get('id')}"
+            names = _dedupe([a["name"] for a in item.get("artists", [])])
+            images = item.get("album", {}).get("images", [])
+            art_url = images[0].get("url", "") if images else ""
+            duration = float(item.get("duration_ms", 0)) / 1000.0
+            album = item.get("album", {}).get("name", "")
+            if names:
+                with self._lock:
+                    self._cache[tid] = names
+                    self._save()
+            return {
+                "track_id": tid,
+                "artists": names,
+                "album": album,
+                "duration": duration,
+                "art_url": art_url
+            }
+        except Exception:
+            return None
+
     def lookup(self, canonical_id: str) -> List[str]:
         """Returns the full ordered credit list for a spotify:track:<id>, or [] on failure."""
         tid = canonical_id.split(":")[-1]
@@ -199,6 +234,19 @@ class ArtistResolver:
         names: List[str] = []
         if self.config.resolve_all_artists:
             names = self.lookup(meta.canonical_id)
+            if not names and meta.title and meta.artist:
+                searched = self.search_track(meta.title, meta.artist)
+                if searched:
+                    names = searched.get("artists", [])
+                    if searched.get("track_id") and ":win_" in meta.track_id:
+                        meta = replace(meta, track_id=searched["track_id"])
+                    if not meta.art_url and searched.get("art_url"):
+                        meta = replace(meta, art_url=searched["art_url"])
+                    if (not meta.album or meta.album == "Unknown Album") and searched.get("album"):
+                        meta = replace(meta, album=searched["album"])
+                    if meta.duration <= 0.0 and searched.get("duration"):
+                        meta = replace(meta, duration=searched["duration"])
+
         ok = bool(names)
         if not names:
             names = [meta.artist] if meta.artist and meta.artist != "Unknown Artist" else ["Unknown Artist"]

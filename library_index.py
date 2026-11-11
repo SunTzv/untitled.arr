@@ -51,11 +51,22 @@ class LibraryManager:
     # FILENAME SANITIZATION & PATH RESOLUTION
     # ==========================================================================
 
-    @staticmethod
-    def sanitize_filename(name: str) -> str:
-        """Strips invalid filesystem characters and trims trailing whitespace/dots."""
+    WINDOWS_RESERVED_NAMES = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+    }
+
+    @classmethod
+    def sanitize_filename(cls, name: str) -> str:
+        """Strips invalid filesystem characters, trims trailing whitespace/dots, and avoids Windows reserved names."""
         cleaned = re.sub(r'[\\/*?:"<>|\x00-\x1f]', "", name).strip(" .")
-        return cleaned[:120] if cleaned else "Unknown"
+        if not cleaned:
+            return "Unknown"
+        base_stem = cleaned.split(".")[0].upper()
+        if base_stem in cls.WINDOWS_RESERVED_NAMES:
+            cleaned = f"_{cleaned}"
+        return cleaned[:120]
 
     def generate_destination_path(self, meta: TrackMetadata) -> Path:
         """

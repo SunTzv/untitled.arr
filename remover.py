@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,15 +102,65 @@ class SongRemover:
 
     # ------------------------------------------------------------------ removal
     def _trash(self, path: Path) -> Tuple[bool, str]:
-        """Moves to the desktop Trash when possible, else to <library>/.removed/."""
-        for cmd in (["gio", "trash", str(path)], ["trash-put", str(path)]):
-            if shutil.which(cmd[0]):
-                try:
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                    if r.returncode == 0 and not path.exists():
-                        return True, f"moved to Trash ({cmd[0]})"
-                except Exception:
-                    pass
+        """Moves to the desktop Trash/Recycle Bin when possible, else to <library>/.removed/."""
+        # 1. Windows Recycle Bin
+        if sys.platform == "win32":
+            try:
+                import send2trash
+                send2trash.send2trash(str(path))
+                if not path.exists():
+                    return True, "moved to Recycle Bin (send2trash)"
+            except Exception:
+                pass
+
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                class SHFILEOPSTRUCTW(ctypes.Structure):
+                    _fields_ = [
+                        ("hwnd", wintypes.HWND),
+                        ("wFunc", wintypes.UINT),
+                        ("pFrom", wintypes.LPCWSTR),
+                        ("pTo", wintypes.LPCWSTR),
+                        ("fFlags", wintypes.WORD),
+                        ("fAnyOperationsAborted", wintypes.BOOL),
+                        ("hNameMappings", wintypes.LPVOID),
+                        ("lpszProgressTitle", wintypes.LPCWSTR),
+                    ]
+
+                file_op = SHFILEOPSTRUCTW()
+                file_op.wFunc = 0x0003  # FO_DELETE
+                file_op.pFrom = str(path.resolve()) + "\0\0"
+                file_op.fFlags = 0x0040 | 0x0010 | 0x0004  # FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
+                result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(file_op))
+                if result == 0 and not path.exists():
+                    return True, "moved to Recycle Bin"
+            except Exception:
+                pass
+
+        # 2. macOS Trash via Finder
+        elif sys.platform == "darwin":
+            try:
+                script = f'tell application "Finder" to delete POSIX file "{path.resolve()}"'
+                r = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
+                if r.returncode == 0 and not path.exists():
+                    return True, "moved to Trash (Finder)"
+            except Exception:
+                pass
+
+        # 3. Linux desktop Trash
+        else:
+            for cmd in (["gio", "trash", str(path)], ["trash-put", str(path)]):
+                if shutil.which(cmd[0]):
+                    try:
+                        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                        if r.returncode == 0 and not path.exists():
+                            return True, f"moved to Trash ({cmd[0]})"
+                    except Exception:
+                        pass
+
+        # 4. Fallback: move to <library>/.removed/
         try:
             hold = self.out / ".removed"
             hold.mkdir(exist_ok=True)
