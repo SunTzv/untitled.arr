@@ -5,8 +5,8 @@ Communicates with Spotify via playerctl to fetch track data and status.
 
 from __future__ import annotations
 import subprocess
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 
 # ==============================================================================
@@ -27,6 +27,8 @@ class TrackMetadata:
     position: float        # Current playback position in seconds
     art_url: str           # Cover art URL
     is_ad: bool            # True if advertisement or invalid track
+    artists: List[str] = field(default_factory=list)    # Full performer list (filled by ArtistResolver)
+    composers: List[str] = field(default_factory=list)  # Music directors hidden from `artist`
 
     @property
     def canonical_id(self) -> str:
@@ -84,8 +86,15 @@ class SpotifyMPRIS:
             ) = [p.strip() for p in parts[:11]]
 
             # Convert duration and position from microseconds to seconds
-            duration = float(length_us) / 1_000_000.0 if length_us.isdigit() else 0.0
-            position = float(pos_us) / 1_000_000.0 if pos_us.isdigit() else 0.0
+            try:
+                duration = float(length_us) / 1_000_000.0
+            except (ValueError, TypeError):
+                duration = 0.0
+
+            try:
+                position = float(pos_us) / 1_000_000.0
+            except (ValueError, TypeError):
+                position = 0.0
 
             # Normalize URI
             clean_track_id = raw_track_id

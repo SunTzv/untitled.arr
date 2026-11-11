@@ -7,6 +7,7 @@ Handles CLI commands, single-instance PID locking, and signal handling.
 from __future__ import annotations
 import argparse
 import os
+import re
 import signal
 import sys
 import time
@@ -17,11 +18,13 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from artists import ArtistResolver
 from audio_sink import AudioSinkManager
 from config import CONFIG, RecorderConfig, format_duration, format_human_time
 from library_index import LibraryManager
 from player_mpris import SpotifyMPRIS
 from recorder import AudioRecorder
+from remover import SongRemover
 from state_machine import RecordingSession
 from tagger import MetadataTagger
 from verifier import AudioVerifier
@@ -49,6 +52,9 @@ class DaemonSupervisor:
             config=self.config
         )
         self.running = False
+        self.is_isolated: bool = False
+        self.last_reroute_time: float = 0.0
+        self.last_track_id: Optional[str] = None
 
     # ==========================================================================
     # PID LOCKING
@@ -89,18 +95,44 @@ class DaemonSupervisor:
     def setup_audio_source(self) -> str:
         """Resolves capture source and routes Spotify audio to dedicated sink if available."""
         source, is_isolated = self.sink_manager.get_recording_source(self.config.prefer_isolated_sink)
+        self.is_isolated = is_isolated
 
         if is_isolated:
             print(f"Audio Isolation : Active ({self.config.sink_name})")
-            success, msg = self.sink_manager.route_spotify_to_sink()
-            if success:
+            all_on_sink, moved, msg = self.sink_manager.route_spotify()
+            if all_on_sink:
                 print(f"Audio Routing   : {msg}")
+            else:
+                print(f"Audio Routing   : {msg} (will keep retrying)")
         else:
             print(f"Audio Isolation : Inactive (capturing system default '{source}')")
             print("                  Tip: Run 'python3 start.py' to isolate Spotify from desktop alerts.")
 
         self.session.set_audio_source(source)
         return source
+
+    def maintain_routing(self, meta: Optional[TrackMetadata]) -> None:
+        """Periodically checks and maintains Spotify routing to the isolated sink."""
+        if not self.is_isolated:
+            return
+
+        now = time.time()
+        current_track_id = meta.canonical_id if meta else None
+        is_track_change = (current_track_id != self.last_track_id)
+        reroute_interval = getattr(self.config, "reroute_interval", 3.0)
+
+        if not is_track_change and (now - self.last_reroute_time < reroute_interval):
+            return
+
+        self.last_reroute_time = now
+        all_on_sink, moved, msg = self.sink_manager.route_spotify()
+
+        if not is_track_change and moved > 0:
+            if meta and meta.status == "Playing":
+                if self.session.active_meta and (self.session.active_meta.canonical_id == current_track_id):
+                    self.session.discard_current_take("audio stream rerouted")
+
+        self.last_track_id = current_track_id
 
     # ==========================================================================
     # MAIN LOOP
@@ -117,6 +149,7 @@ class DaemonSupervisor:
             print("\nStopping recorder daemon... Done.")
             self.running = False
             self.session.finalize_current_take("Daemon stopped")
+            self.session.shutdown()
             self.release_lock()
             sys.exit(0)
 
@@ -137,12 +170,17 @@ class DaemonSupervisor:
         print("─────────────────────────────────────────────")
         print("Listening for Spotify playback... (Ctrl+C to stop)\n")
 
+        # Clean any leftover temporary takes from previous abruptly killed sessions
+        AudioRecorder.cleanup_orphaned_takes(self.config.output_dir)
+
         try:
             while self.running:
                 meta = SpotifyMPRIS.get_track_data()
+                self.maintain_routing(meta)
                 self.session.process_tick(meta)
                 time.sleep(self.config.poll_interval)
         finally:
+            self.session.shutdown()
             self.release_lock()
 
 
@@ -175,7 +213,10 @@ def cmd_status() -> None:
         pct = int(round((meta.position / meta.duration * 100))) if meta.duration > 0 else 0
         in_lib = "Yes (already recorded)" if lib.is_recorded(meta.canonical_id) else "No (will record on full listen)"
         print(f"Spotify Player : {status_icon} {meta.status}")
-        print(f"Now Playing    : {meta.title} · {meta.artist}")
+        shown, _ = ArtistResolver(config).enrich(meta)
+        print(f"Now Playing    : {shown.title} · {shown.artist}")
+        if shown.composers:
+            print(f"Composer       : {', '.join(shown.composers)}")
         if meta.album and meta.album != "Unknown Album":
             print(f"Album          : {meta.album}")
         print(f"Progress       : {format_duration(meta.position)} / {format_duration(meta.duration)} ({pct}%)")
@@ -240,6 +281,136 @@ def cmd_verify_library() -> None:
         print(f"⚠ Warning: {len(missing)} indexed song(s) missing from disk.")
 
 
+def cmd_list(query: str) -> None:
+    """Lists saved songs, optionally filtered."""
+    rm = SongRemover(CONFIG)
+    found = rm.find(query)
+    if not found:
+        print("No matching songs.")
+        return
+    for i, c in enumerate(found, 1):
+        print(f"{i:3d}. {c.label}")
+    print(f"\n{len(found)} song(s).")
+
+
+def cmd_remove(args) -> int:
+    """Safely deletes song(s) from disk (Trash) and unindexes them."""
+    rm = SongRemover(CONFIG)
+    query = " ".join(args.query)
+    found = rm.find(query)
+    if not found:
+        print(f"No songs match {query!r}." if query else "Library is empty.")
+        return 1
+
+    interactive = sys.stdin.isatty()
+    if len(found) > 1 and not args.all:
+        for i, c in enumerate(found, 1):
+            print(f"{i:3d}. {c.label}")
+        if not interactive:
+            print("\nMultiple matches. Narrow the query, or pass --all.")
+            return 2
+        pick = input("\nRemove which? (numbers like 1,3 · 'a' = all · Enter = cancel): ").strip().lower()
+        if not pick:
+            print("Cancelled.")
+            return 0
+        if pick == "a":
+            chosen = found
+        else:
+            try:
+                idx = {int(x) for x in re.split(r"[,\s]+", pick) if x}
+                chosen = [found[i - 1] for i in sorted(idx) if 1 <= i <= len(found)]
+            except ValueError:
+                print("Invalid selection. Nothing removed.")
+                return 1
+    else:
+        chosen = found
+    if not chosen:
+        print("Nothing selected.")
+        return 1
+
+    action = "PERMANENTLY DELETE" if args.permanent else "move to Trash"
+    if args.unindex_only:
+        action = "unindex only (file kept)"
+    print(f"\nAbout to {action}:")
+    for c in chosen:
+        print(f"  - {c.label}")
+
+    if not args.yes and not args.dry_run:
+        if not interactive:
+            print("Not a terminal: pass --yes to confirm.")
+            return 2
+        if args.permanent:
+            if input(f"Type DELETE to confirm permanent deletion of {len(chosen)} song(s): ").strip() != "DELETE":
+                print("Cancelled.")
+                return 0
+        elif input(f"Proceed with {len(chosen)} song(s)? [y/N]: ").strip().lower() not in ("y", "yes"):
+            print("Cancelled.")
+            return 0
+
+    failures = 0
+    for c in chosen:
+        ok, msg = rm.remove(c, permanent=args.permanent, unindex_only=args.unindex_only, dry_run=args.dry_run)
+        print(f"{'✓' if ok else '✕'} {c.label}: {msg}")
+        failures += 0 if ok else 1
+    return 1 if failures else 0
+
+
+def cmd_refresh_artists(dry_run: bool) -> None:
+    """Re-resolves the full artist list for saved songs, then fixes tags, filenames and index."""
+    from dataclasses import replace
+    from mutagen.oggopus import OggOpus
+    from player_mpris import TrackMetadata
+
+    lib = LibraryManager(CONFIG)
+    resolver = ArtistResolver(CONFIG)
+    sep = CONFIG.artist_separator
+    changed = failed = 0
+
+    for tid, e in list(lib.index.items()):
+        path = CONFIG.output_dir / (e.get("file") or "")
+        if not path.is_file():
+            continue
+        names = resolver.lookup(tid)
+        if not names:
+            failed += 1
+            print(f"? {e.get('title')}: lookup failed, left as is")
+            continue
+        base = TrackMetadata("", tid, e.get("artist", ""), e.get("title", ""), e.get("album", ""),
+                             e.get("artist", ""), "1", "1", 0.0, 0.0, "", False)
+        new, _ = resolver.enrich(base)
+        old_artists = e.get("artists") or [e.get("artist", "")]
+        if new.artists == old_artists and e.get("composers", []) == new.composers:
+            continue
+
+        meta_for_name = replace(base, artist=new.artist)
+        dest = lib.generate_destination_path(meta_for_name)
+        print(f"{'~' if dry_run else '✓'} {e.get('title')}: {', '.join(old_artists)} -> {new.artist}"
+              + (f"  (composer: {', '.join(new.composers)})" if new.composers else "")
+              + (f"  [rename -> {dest.name}]" if dest.name != path.name else ""))
+        changed += 1
+        if dry_run:
+            continue
+        try:
+            audio = OggOpus(path)
+            audio["artist"] = list(new.artists)
+            if new.composers:
+                audio["composer"] = list(new.composers)
+            elif "composer" in audio:
+                del audio["composer"]
+            alb = audio.get("albumartist", [""])[0]
+            if new.album_artist != base.album_artist or not alb:
+                audio["albumartist"] = [new.album_artist]
+            audio.save()
+            if dest.name != path.name:
+                path.rename(dest)
+            e.update({"file": dest.name, "artist": new.artist, "artists": list(new.artists),
+                      "composers": list(new.composers)})
+            lib.save_index()
+        except Exception as ex:
+            print(f"  ✕ failed to update {path.name}: {ex}")
+    print(f"\n{changed} song(s) {'would change' if dry_run else 'updated'}, {failed} lookup failure(s).")
+
+
 # ==============================================================================
 # CLI ENTRYPOINT
 # ==============================================================================
@@ -254,6 +425,17 @@ def main():
     subparsers.add_parser("teardown-sink", help="Remove isolated audio sink")
     subparsers.add_parser("route", help="Route Spotify audio to isolated sink")
     subparsers.add_parser("verify-library", help="Audit existing recordings and print statistics")
+    p_list = subparsers.add_parser("list", help="List saved songs (optionally filtered)")
+    p_list.add_argument("query", nargs="*")
+    p_rm = subparsers.add_parser("remove", help="Safely delete a song (to Trash) and unindex it")
+    p_rm.add_argument("query", nargs="*", help="title/artist words, filename, or Spotify URL/URI")
+    p_rm.add_argument("--yes", "-y", action="store_true", help="skip confirmation")
+    p_rm.add_argument("--all", action="store_true", help="remove every match")
+    p_rm.add_argument("--permanent", action="store_true", help="hard-delete instead of Trash")
+    p_rm.add_argument("--unindex-only", action="store_true", help="drop from library.json but keep the file")
+    p_rm.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
+    p_ra = subparsers.add_parser("refresh-artists", help="Re-detect all artists for saved songs and fix tags/filenames")
+    p_ra.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
     cmd = args.command or "run"
@@ -270,6 +452,12 @@ def main():
         cmd_route()
     elif cmd == "verify-library":
         cmd_verify_library()
+    elif cmd == "list":
+        cmd_list(" ".join(args.query))
+    elif cmd == "remove":
+        sys.exit(cmd_remove(args))
+    elif cmd == "refresh-artists":
+        cmd_refresh_artists(args.dry_run)
 
 
 if __name__ == "__main__":

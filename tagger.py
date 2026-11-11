@@ -60,7 +60,10 @@ class MetadataTagger:
 
             # Embed standard Vorbis tags
             audio["title"] = [meta.title]
-            audio["artist"] = [meta.artist]
+            # Multi-value artist tag: players show each singer separately
+            audio["artist"] = list(meta.artists) if meta.artists else [meta.artist]
+            if meta.composers:
+                audio["composer"] = list(meta.composers)
             audio["album"] = [meta.album]
             audio["albumartist"] = [meta.album_artist]
             audio["tracknumber"] = [meta.track_number]

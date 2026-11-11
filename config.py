@@ -6,7 +6,8 @@ Defines storage paths, audio encoding parameters, and playback thresholds.
 from __future__ import annotations
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
 from pathlib import Path
 
 
@@ -21,6 +22,20 @@ class RecorderConfig:
     naming_pattern: str = "{track} ({artist})"
     embed_artwork: bool = True
 
+    # Multi-artist detection
+    resolve_all_artists: bool = True      # Look up the full credit list (Spotify's MPRIS only exposes the first artist)
+    artist_separator: str = ", "          # Used when joining artists for filenames / display
+    spotify_client_id: str = ""           # Optional: Spotify Web API creds (most reliable lookup). Env vars also work:
+    spotify_client_secret: str = ""       #   SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET
+    # Music directors / composers: hidden from the artist when a singer is also credited.
+    # They are kept in the "composer" tag instead. Edit via config.json ("composers": [...]).
+    composers: List[str] = field(default_factory=lambda: [
+        "Pritam", "Vishal-Shekhar", "Vishal & Shekhar", "Shankar-Ehsaan-Loy", "Shankar Ehsaan Loy",
+        "Sachin-Jigar", "Sachin Jigar", "Salim-Sulaiman", "Salim Sulaiman", "Jatin-Lalit",
+        "Nadeem-Shravan", "Sajid-Wajid", "Anu Malik", "Tanishk Bagchi", "Amaal Mallik",
+        "Rochak Kohli", "Meet Bros", "Vishal Mishra", "Ajay-Atul", "Ajay Atul",
+    ])
+
     # Audio encoding settings
     audio_codec: str = "libopus"
     audio_bitrate: str = "96k"
@@ -30,15 +45,22 @@ class RecorderConfig:
     opus_compression_level: int = 10
 
     # Detection thresholds
-    completion_ratio: float = 0.95        # Minimum percentage of track listened (95%)
-    max_start_offset: float = 2.5         # Maximum allowable start delay (seconds)
+    completion_ratio: float = 0.98        # Minimum percentage of track listened (98%)
+    max_start_offset: float = 1.5         # Maximum allowable start delay (seconds)
     max_seek_discrepancy: float = 2.5     # Seek tolerance between checks (seconds)
-    max_pause_seconds: float = 60.0       # Max pause tolerance before drop (seconds)
+    cap_recording_to_track: bool = True   # Pass -t (duration - start_pos) to ffmpeg
     poll_interval: float = 0.5            # Interval between MPRIS polls (seconds)
+
+    # Audio content verification
+    reject_silent_takes: bool = True      # Discard recordings with excessive silence
+    silence_noise_db: float = -60.0       # Noise floor threshold for silence detection (dB)
+    silence_min_seconds: float = 2.0      # Minimum duration of silence to detect (seconds)
+    max_silence_ratio: float = 0.10       # Maximum acceptable ratio of silence to take duration
 
     # Audio isolation
     sink_name: str = "SpotifySink"
     prefer_isolated_sink: bool = True
+    reroute_interval: float = 3.0         # Seconds between periodic stream re-routing checks
 
     @property
     def index_file(self) -> Path:
