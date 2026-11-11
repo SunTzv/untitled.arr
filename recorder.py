@@ -7,10 +7,11 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple
-from config import CONFIG, RecorderConfig
+from config import CONFIG, RecorderConfig, get_ffmpeg_path
 
 
 # ==============================================================================
@@ -71,8 +72,24 @@ class AudioRecorder:
         return cleaned
 
     def _input_args(self, source: str) -> list[str]:
-        """Returns ffmpeg input arguments for audio capture."""
-        return ["-f", "pulse", "-i", source]
+        """Returns ffmpeg input arguments for audio capture according to the host OS."""
+        if sys.platform == "win32":
+            if source == "pipe":
+                return [
+                    "-f", "s16le",
+                    "-ar", self.config.audio_sample_rate,
+                    "-ac", str(self.config.audio_channels),
+                    "-i", "pipe:0"
+                ]
+            elif source.startswith("audio="):
+                return ["-f", "dshow", "-i", source]
+            else:
+                return ["-f", "dshow", "-i", f"audio={source}"]
+        elif sys.platform == "darwin":
+            dev = source if source.startswith(":") else f":{source}"
+            return ["-f", "avfoundation", "-i", dev]
+        else:
+            return ["-f", "pulse", "-i", source]
 
     def start_recording(
         self,
@@ -94,9 +111,8 @@ class AudioRecorder:
         self.stderr_log = self.active_temp_path.with_suffix(".ffmpeg.log")
 
         cmd = [
-            "ffmpeg",
+            get_ffmpeg_path(),
             "-y",
-            "-nostdin",
             *self._input_args(source),
         ]
         if max_seconds is not None and max_seconds > 0:
@@ -116,12 +132,17 @@ class AudioRecorder:
         log_file = None
         try:
             log_file = open(self.stderr_log, "w", encoding="utf-8")
-            self.proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=log_file,
-                preexec_fn=os.setsid
-            )
+            popen_kwargs: dict = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": log_file,
+                "stdin": subprocess.PIPE,
+            }
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["preexec_fn"] = os.setsid
+
+            self.proc = subprocess.Popen(cmd, **popen_kwargs)
             return True
         except Exception as e:
             print(f"Error: Failed to start FFmpeg: {e}")
@@ -133,7 +154,7 @@ class AudioRecorder:
 
     def stop_recording(self) -> Tuple[int, str]:
         """
-        Sends SIGINT to allow Opus container headers to finalize cleanly.
+        Sends SIGINT (or 'q' via stdin) to allow Opus container headers to finalize cleanly.
         Returns: (return_code, error_diagnostic)
         """
         if not self.proc:
@@ -143,12 +164,47 @@ class AudioRecorder:
         error_msg = ""
         try:
             if self.proc.poll() is None:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGINT)
+                # 1. Graceful stdin exit (universal for FFmpeg)
                 try:
-                    self.proc.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-                    self.proc.wait(timeout=2.0)
+                    if self.proc.stdin and not self.proc.stdin.closed:
+                        self.proc.stdin.write(b"q\n")
+                        self.proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
+
+                if sys.platform == "win32":
+                    # On Windows, trigger CTRL_BREAK_EVENT for process group
+                    try:
+                        self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+                    except (AttributeError, OSError):
+                        pass
+                    try:
+                        self.proc.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        self.proc.kill()
+                        self.proc.wait(timeout=2.0)
+                else:
+                    # On POSIX, use SIGINT to finalize container headers
+                    try:
+                        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                            os.killpg(os.getpgid(self.proc.pid), signal.SIGINT)
+                        else:
+                            self.proc.send_signal(signal.SIGINT)
+                    except (AttributeError, ProcessLookupError, PermissionError):
+                        pass
+
+                    try:
+                        self.proc.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                            else:
+                                self.proc.kill()
+                        except (AttributeError, ProcessLookupError, PermissionError):
+                            self.proc.kill()
+                        self.proc.wait(timeout=2.0)
+
             ret_code = self.proc.returncode or 0
         except Exception as e:
             error_msg = f"Exception stopping recorder: {e}"

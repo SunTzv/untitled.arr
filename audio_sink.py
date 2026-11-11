@@ -1,13 +1,15 @@
 """
 Audio sink management module for untitled.arr.
-Handles virtual null-sink creation, loopback audio routing, and stream redirection.
+Handles virtual null-sink creation, loopback audio routing, and stream redirection across Linux, Windows, and macOS.
 """
 
 from __future__ import annotations
 import os
 import re
 import subprocess
-from typing import Optional, Tuple
+import sys
+from typing import List, Optional, Tuple
+from config import get_ffmpeg_path
 
 
 # ==============================================================================
@@ -20,11 +22,50 @@ class AudioSinkManager:
         self.monitor_source = f"{sink_name}.monitor"
 
     # ==========================================================================
+    # WINDOWS AUDIO DEVICE DISCOVERY
+    # ==========================================================================
+
+    @staticmethod
+    def get_windows_audio_devices() -> List[str]:
+        """Queries FFmpeg DirectShow audio devices on Windows."""
+        if sys.platform != "win32":
+            return []
+        try:
+            res = subprocess.run(
+                [get_ffmpeg_path(), "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                text=True,
+                errors="replace",
+                timeout=4.0
+            )
+            output = res.stderr or ""
+            devices: List[str] = []
+            in_audio = False
+            for line in output.splitlines():
+                if "DirectShow audio devices" in line:
+                    in_audio = True
+                    continue
+                if in_audio:
+                    if "DirectShow video devices" in line:
+                        break
+                    m = re.search(r'\[dshow\s*@[^\]]+\]\s+"([^"]+)"', line)
+                    if m:
+                        name = m.group(1).strip()
+                        if name and name not in devices:
+                            devices.append(name)
+            return devices
+        except Exception:
+            return []
+
+    # ==========================================================================
     # SINK LIFECYCLE MANAGEMENT
     # ==========================================================================
 
     def get_sink_index(self) -> Optional[str]:
-        """Returns the numerical sink index of the dedicated sink if active."""
+        """Returns the numerical sink index of the dedicated sink if active (Linux)."""
+        if sys.platform != "linux":
+            return None
         env = {**os.environ, "LC_ALL": "C"}
         try:
             output = subprocess.check_output(
@@ -42,11 +83,40 @@ class AudioSinkManager:
         return None
 
     def is_sink_active(self) -> bool:
-        """Checks if the dedicated sink currently exists in Pulse/PipeWire."""
-        return self.get_sink_index() is not None
+        """Checks if the dedicated sink or virtual cable currently exists."""
+        if sys.platform == "win32":
+            devices = self.get_windows_audio_devices()
+            if self.sink_name in devices:
+                return True
+            return any("cable" in d.lower() or "virtual" in d.lower() or "voicemeeter" in d.lower() for d in devices)
+        elif sys.platform == "darwin":
+            # Check for BlackHole or Soundflower on macOS
+            return False
+        else:
+            # Linux PulseAudio / PipeWire
+            return self.get_sink_index() is not None
 
     def setup_isolated_sink(self) -> Tuple[bool, str]:
-        """Creates the virtual null-sink and loopback to maintain audible playback."""
+        """Creates the virtual null-sink and loopback or validates Windows virtual audio cable."""
+        if sys.platform == "win32":
+            devices = self.get_windows_audio_devices()
+            for dev in devices:
+                if any(kw in dev.lower() for kw in ("cable", "virtual", "voicemeeter")):
+                    return True, (
+                        f"Windows virtual audio device '{dev}' detected. "
+                        "In Windows Sound Settings -> Volume mixer, set Spotify's Output to 'CABLE Input' to isolate."
+                    )
+            return False, (
+                "Audio isolation on Windows requires a virtual audio cable (e.g. free VB-Audio Virtual Cable). "
+                "Without it, untitled.arr will capture system loopback (Stereo Mix)."
+            )
+        elif sys.platform == "darwin":
+            return False, (
+                "Audio isolation on macOS requires a virtual loopback device (e.g. BlackHole 2ch). "
+                "Install BlackHole and configure Spotify to output to it."
+            )
+
+        # Linux PulseAudio / PipeWire
         if self.is_sink_active():
             return True, f"Dedicated audio sink '{self.sink_name}' is already active."
 
@@ -75,11 +145,17 @@ class AudioSinkManager:
                 env=env
             )
             return True, f"Created isolated audio sink '{self.sink_name}'."
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
             return False, f"Failed to set up isolated audio sink: {e}"
 
     def teardown_isolated_sink(self) -> Tuple[bool, str]:
         """Unloads modules associated with the dedicated sink."""
+        if sys.platform == "win32":
+            return True, "On Windows, restore audio routing in Windows Sound Settings -> Volume mixer."
+        elif sys.platform == "darwin":
+            return True, "On macOS, restore audio routing in macOS Sound Preferences."
+
+        # Linux PulseAudio / PipeWire
         unloaded = 0
         env = {**os.environ, "LC_ALL": "C"}
         try:
@@ -107,6 +183,18 @@ class AudioSinkManager:
 
     def get_default_monitor_source(self) -> str:
         """Returns the monitor source of the current system default audio sink."""
+        if sys.platform == "win32":
+            devices = self.get_windows_audio_devices()
+            for d in devices:
+                if "stereo mix" in d.lower():
+                    return d
+            if devices:
+                return devices[0]
+            return "Stereo Mix"
+        elif sys.platform == "darwin":
+            return ":0"
+
+        # Linux PulseAudio / PipeWire
         env = {**os.environ, "LC_ALL": "C"}
         try:
             sink = subprocess.check_output(
@@ -126,6 +214,25 @@ class AudioSinkManager:
         Resolves the audio capture monitor source.
         Returns: (source_name, is_isolated)
         """
+        if sys.platform == "win32":
+            devices = self.get_windows_audio_devices()
+            if prefer_isolated:
+                if self.sink_name in devices:
+                    return self.sink_name, True
+                for d in devices:
+                    if any(kw in d.lower() for kw in ("cable", "virtual", "voicemeeter")):
+                        return d, True
+            for d in devices:
+                if "stereo mix" in d.lower():
+                    return d, False
+            if devices:
+                return devices[0], False
+            return "Stereo Mix", False
+
+        elif sys.platform == "darwin":
+            return ":0", False
+
+        # Linux
         if prefer_isolated and self.is_sink_active():
             return self.monitor_source, True
 
@@ -140,6 +247,15 @@ class AudioSinkManager:
         Redirects Spotify playback streams to the dedicated sink if not already on it.
         Returns: (all_on_sink, moved_count, message)
         """
+        if sys.platform == "win32":
+            if self.is_sink_active():
+                return True, 0, "Route Spotify Output to 'CABLE Input' in Windows Settings -> Sound -> Volume mixer."
+            return False, 0, "Capturing system audio (Stereo Mix / loopback)."
+
+        elif sys.platform == "darwin":
+            return False, 0, "Configure Spotify output in macOS Sound Settings."
+
+        # Linux PulseAudio / PipeWire
         sink_index = self.get_sink_index()
         if not sink_index:
             return False, 0, f"Isolated sink '{self.sink_name}' is not active."
