@@ -1,0 +1,11 @@
+# Core requirements
+mutagen>=1.45.0
+
+# Windows support (recommended for native media transport controls)
+winsdk>=5.0.0; sys_platform == 'win32'
+
+# Optional: Safe trash on Windows / other OS
+send2trash>=1.8.0
+
+# Optional: Direct WASAPI system audio loopback without virtual cables on Windows
+pyaudiowpatch>=0.2.12; sys_platform == 'win32'
